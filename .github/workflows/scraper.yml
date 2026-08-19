@@ -5,9 +5,7 @@ on:
 
   # Run automatically every 30 minutes.
   schedule:
-
-    - cron: "*/5 * * * *"
-
+  - cron: "7,22,37,52 * * * *"
 
   # Allows you to manually start it.
   workflow_dispatch:
