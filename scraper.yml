@@ -1,0 +1,130 @@
+name: Haru TCG Scraper
+
+on:
+  schedule:
+    - cron: "*0 * * * *"
+
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+
+jobs:
+
+  scrape:
+    runs-on: ubuntu-latest
+
+    steps:
+
+      # ------------------------------------------------------
+      # CHECKOUT
+      # ------------------------------------------------------
+
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+
+
+      # ------------------------------------------------------
+      # SAVE PREVIOUS CSV
+      # ------------------------------------------------------
+
+      - name: Save previous card data
+        run: |
+
+          if git show HEAD:yugioh_cards.csv > previous_cards.csv 2>/dev/null; then
+            echo "Previous card data found."
+          else
+            echo "No previous card data found."
+            touch previous_cards.csv
+          fi
+
+
+      # ------------------------------------------------------
+      # PYTHON
+      # ------------------------------------------------------
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+
+      # ------------------------------------------------------
+      # DEPENDENCIES
+      # ------------------------------------------------------
+
+      - name: Install dependencies
+        run: |
+          pip install requests
+
+
+      # ------------------------------------------------------
+      # RUN SCRAPER
+      # ------------------------------------------------------
+
+      - name: Run scraper
+        run: |
+          python scraper.py
+
+
+      # ------------------------------------------------------
+      # CHECK PRICE AND STOCK CHANGES
+      # ------------------------------------------------------
+
+      - name: Check for price and stock changes
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+
+        run: |
+          python tracker.py
+
+
+      # ------------------------------------------------------
+      # COPY CURRENT DATA TO WEBSITE
+      # ------------------------------------------------------
+
+      - name: Prepare website
+        run: |
+          cp yugioh_cards.csv website/yugioh_cards.csv
+
+
+      # ------------------------------------------------------
+      # COMMIT UPDATED CSV
+      # ------------------------------------------------------
+
+      - name: Save updated CSV
+        run: |
+
+          git config user.name "github-actions[bot]"
+
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add yugioh_cards.csv
+
+          git diff --cached --quiet || \
+            git commit -m "Update Yu-Gi-Oh card data"
+
+          git push
+
+
+      # ------------------------------------------------------
+      # UPLOAD WEBSITE
+      # ------------------------------------------------------
+
+        - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: website/
+
+
+      - name: Deploy website
+        id: deployment
+        uses: actions/deploy-pages@v4
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
