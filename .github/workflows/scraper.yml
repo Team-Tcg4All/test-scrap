@@ -2,22 +2,23 @@ name: Haru TCG Scraper
 
 on:
   schedule:
-    - cron: "7,22,37,52 * * * *"
+    # Runs at :07 and :37 every hour (UTC)
+    - cron: "7,37 * * * *"
 
+  # Allows you to run it manually from GitHub Actions
   workflow_dispatch:
 
+  # Also runs automatically whenever you push to main
+  push:
+    branches:
+      - main
 
 permissions:
-
   contents: write
 
-
 jobs:
-
   scrape:
-
     runs-on: ubuntu-latest
-
 
     steps:
 
@@ -26,11 +27,8 @@ jobs:
       # ======================================================
 
       - name: Checkout repository
-
-        uses: actions/checkout@v6
-
+        uses: actions/checkout@v4
         with:
-
           fetch-depth: 2
 
 
@@ -39,19 +37,12 @@ jobs:
       # ======================================================
 
       - name: Save previous card data
-
         run: |
-
           if git show HEAD:yugioh_cards.csv > previous_cards.csv 2>/dev/null; then
-
             echo "Previous card data found."
-
           else
-
             echo "No previous card data found."
-
             touch previous_cards.csv
-
           fi
 
 
@@ -60,11 +51,8 @@ jobs:
       # ======================================================
 
       - name: Set up Python
-
-        uses: actions/setup-python@v6
-
+        uses: actions/setup-python@v5
         with:
-
           python-version: "3.12"
 
 
@@ -73,50 +61,38 @@ jobs:
       # ======================================================
 
       - name: Install dependencies
-
         run: |
-
           pip install requests
 
 
       # ======================================================
-      # SCRAPE
+      # SCRAPE HARU TCG
       # ======================================================
 
       - name: Run scraper
-
         run: |
-
           python scraper.py
 
 
       # ======================================================
-      # CHECK CHANGES
+      # CHECK PRICE / STOCK / NEW CARDS
       # ======================================================
 
       - name: Check price and stock changes
-
         env:
-
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-
         run: |
-
           python tracker.py
 
 
       # ======================================================
-      # SAVE CURRENT CSV
+      # SAVE UPDATED CSV
       # ======================================================
 
       - name: Save updated card data
-
         run: |
-
           git config user.name "github-actions[bot]"
-
-          git config user.email \
-            "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           git add yugioh_cards.csv
 
