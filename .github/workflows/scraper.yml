@@ -1,13 +1,9 @@
 name: Haru TCG Scraper
 
-
 on:
-
-  # Run automatically every 30 minutes.
   schedule:
-  - cron: "7,22,37,52 * * * *"
+    - cron: "7,22,37,52 * * * *"
 
-  # Allows you to manually start it.
   workflow_dispatch:
 
 
