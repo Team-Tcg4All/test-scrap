@@ -1,217 +1,585 @@
 import csv
-import time
+import os
 from pathlib import Path
-from urllib.parse import urljoin
 
 import requests
 
 
-STORE = "https://harutcg.com"
-OUTPUT = Path("yugioh_cards.csv")
+CURRENT = Path("yugioh_cards.csv")
+PREVIOUS = Path("previous_cards.csv")
 
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/138.0 Safari/537.36"
-    )
-}
+DISCORD_WEBHOOK = os.getenv("DISCORD_WEBHOOK")
 
 
-def get_products():
-    session = requests.Session()
-    session.headers.update(HEADERS)
+# ============================================================
+# SETTINGS
+# ============================================================
 
-    products = []
-    page = 1
+# Notify for ANY price decrease.
+NOTIFY_PRICE_DROPS = True
 
-    while True:
-        print(f"Downloading page {page}...")
+# Notify when something goes from zero stock to available.
+NOTIFY_BACK_IN_STOCK = True
 
-        response = session.get(
-            f"{STORE}/products.json",
-            params={
-                "limit": 250,
-                "page": page,
-            },
-            timeout=30,
-        )
+# Notify when something goes from available to zero.
+NOTIFY_OUT_OF_STOCK = True
 
-        print(f"HTTP {response.status_code}")
+# Notify when a card/product appears that wasn't in the
+# previous scrape.
+NOTIFY_NEW_CARDS = True
 
-        response.raise_for_status()
 
-        data = response.json()
-        batch = data.get("products", [])
+# ============================================================
+# CSV
+# ============================================================
 
-        print(f"Products on page: {len(batch)}")
+def load_csv(path):
 
-        if not batch:
-            break
+    if not path.exists():
+        return {}
 
-        products.extend(batch)
-        page += 1
+    products = {}
 
-        time.sleep(0.5)
+    with open(
+        path,
+        "r",
+        encoding="utf-8-sig",
+        newline="",
+    ) as f:
+
+        reader = csv.DictReader(f)
+
+        for row in reader:
+
+            name = row.get("card", "").strip()
+
+            if not name:
+                continue
+
+            image = row.get("image", "").strip()
+
+            key = (
+                name.lower(),
+                image,
+            )
+
+            products[key] = row
 
     return products
 
 
-def is_yugioh(product):
-    fields = [
-        product.get("title", ""),
-        product.get("handle", ""),
-        product.get("vendor", ""),
-        product.get("product_type", ""),
-        product.get("tags", ""),
-    ]
-
-    text = " ".join(str(x) for x in fields).lower()
-
-    return (
-        "yu-gi-oh" in text
-        or "yugioh" in text
-        or "ygo" in text
-    )
-
-
-def is_excluded_product(product):
-    """
-    Exclude actual Folios and Core/Mazo products.
-
-    IMPORTANT:
-    We only check how the TITLE STARTS.
-    This means a legitimate card containing words such as
-    'Core', 'Folios', 'Blackwing', etc. is not automatically removed.
-    """
-
-    title = product.get("title", "").strip().lower()
-
-    excluded_prefixes = (
-        "folios/",
-        "folios /",
-        "folio/",
-        "folio /",
-        "core / mazo",
-        "core/mazo",
-        "core - mazo",
-    )
-
-    return title.startswith(excluded_prefixes)
-
-
-def get_image(product):
-    images = product.get("images", [])
-
-    if not images:
-        return ""
-
-    return urljoin(STORE, images[0].get("src", ""))
-
-
-def scrape(products):
-    rows = []
-
-    for product in products:
-
-        if not is_yugioh(product):
-            continue
-
-        # Exclude actual Folios and Core/Mazo products.
-        # This happens AFTER the Yu-Gi-Oh check.
-        if is_excluded_product(product):
-            print(
-                f"Excluded: {product.get('title', '').strip()}"
-            )
-            continue
-
-        card = product.get("title", "").strip()
-        image = get_image(product)
-
-        for variant in product.get("variants", []):
-
-            stock = variant.get("inventory_quantity")
-
-            if stock is None:
-                stock = 1 if variant.get("available") else 0
-
-            rows.append({
-                "card": card,
-                "price": variant.get("price", ""),
-                "stock": stock,
-                "image": image,
-            })
-
-    return rows
-
-
-def save_csv(rows):
-    with open(
-        OUTPUT,
-        "w",
-        newline="",
-        encoding="utf-8-sig",
-    ) as f:
-
-        writer = csv.DictWriter(
-            f,
-            fieldnames=[
-                "card",
-                "price",
-                "stock",
-                "image",
-            ],
-        )
-
-        writer.writeheader()
-        writer.writerows(rows)
-
-
-def main():
-
-    print("=" * 60)
-    print("HARU TCG - YU-GI-OH SCRAPER")
-    print("=" * 60)
+def price(value):
 
     try:
-        products = get_products()
+        return float(value)
 
-        print()
-        print(f"Total products downloaded: {len(products)}")
+    except (TypeError, ValueError):
+        return None
 
-        rows = scrape(products)
 
-        print(f"Yu-Gi-Oh products found: {len(rows)}")
+def stock(value):
 
-        # ALWAYS create the CSV.
-        save_csv(rows)
+    try:
+        return int(float(value))
 
-        print()
-        print(f"CSV created: {OUTPUT.resolve()}")
-        print(f"Rows written: {len(rows)}")
+    except (TypeError, ValueError):
+        return 0
 
-        if rows:
-            print()
-            print("First 5 results:")
 
-            for row in rows[:5]:
-                print(
-                    f"{row['card']} | "
-                    f"${row['price']} | "
-                    f"Stock: {row['stock']}"
+# ============================================================
+# DISCORD
+# ============================================================
+
+def send_discord(embed):
+
+    if not DISCORD_WEBHOOK:
+
+        print(
+            "DISCORD_WEBHOOK is not configured. "
+            "Skipping Discord notification."
+        )
+
+        return
+
+    response = requests.post(
+        DISCORD_WEBHOOK,
+        json={
+            "embeds": [embed]
+        },
+        timeout=30,
+    )
+
+    response.raise_for_status()
+
+
+# ============================================================
+# DISCORD EMBEDS
+# ============================================================
+
+def new_card_embed(
+    name,
+    current_price,
+    current_stock,
+    image,
+):
+
+    embed = {
+        "title": "🆕 New Yu-Gi-Oh Card Detected",
+        "description": f"**{name}**",
+        "color": 0x9B59B6,
+
+        "fields": [
+
+            {
+                "name": "Price",
+                "value": f"${current_price:,.2f}",
+                "inline": True,
+            },
+
+            {
+                "name": "Stock",
+                "value": str(current_stock),
+                "inline": True,
+            },
+
+        ],
+    }
+
+    if image:
+
+        embed["thumbnail"] = {
+            "url": image
+        }
+
+    return embed
+
+
+def price_drop_embed(
+    name,
+    old_price,
+    new_price,
+    current_stock,
+    image,
+):
+
+    difference = old_price - new_price
+
+    percentage = (
+        difference / old_price * 100
+        if old_price > 0
+        else 0
+    )
+
+    embed = {
+        "title": "📉 Yu-Gi-Oh Price Drop",
+        "description": f"**{name}**",
+        "color": 0x2ECC71,
+
+        "fields": [
+
+            {
+                "name": "Previous price",
+                "value": f"${old_price:,.2f}",
+                "inline": True,
+            },
+
+            {
+                "name": "New price",
+                "value": f"${new_price:,.2f}",
+                "inline": True,
+            },
+
+            {
+                "name": "Drop",
+                "value": (
+                    f"${difference:,.2f} "
+                    f"({percentage:.2f}%)"
+                ),
+                "inline": False,
+            },
+
+            {
+                "name": "Stock",
+                "value": str(current_stock),
+                "inline": True,
+            },
+
+        ],
+    }
+
+    if image:
+
+        embed["thumbnail"] = {
+            "url": image
+        }
+
+    return embed
+
+
+def back_in_stock_embed(
+    name,
+    current_price,
+    current_stock,
+    image,
+):
+
+    embed = {
+        "title": "🟢 Yu-Gi-Oh Card Back In Stock",
+        "description": f"**{name}**",
+        "color": 0x3498DB,
+
+        "fields": [
+
+            {
+                "name": "Price",
+                "value": f"${current_price:,.2f}",
+                "inline": True,
+            },
+
+            {
+                "name": "Stock",
+                "value": str(current_stock),
+                "inline": True,
+            },
+
+        ],
+    }
+
+    if image:
+
+        embed["thumbnail"] = {
+            "url": image
+        }
+
+    return embed
+
+
+def out_of_stock_embed(
+    name,
+    current_price,
+    image,
+):
+
+    embed = {
+        "title": "🔴 Yu-Gi-Oh Card Out Of Stock",
+        "description": f"**{name}**",
+        "color": 0xE74C3C,
+
+        "fields": [
+
+            {
+                "name": "Price",
+                "value": f"${current_price:,.2f}",
+                "inline": True,
+            },
+
+            {
+                "name": "Stock",
+                "value": "0",
+                "inline": True,
+            },
+
+        ],
+    }
+
+    if image:
+
+        embed["thumbnail"] = {
+            "url": image
+        }
+
+    return embed
+
+
+# ============================================================
+# COMPARISON
+# ============================================================
+
+def compare():
+
+    current = load_csv(CURRENT)
+    previous = load_csv(PREVIOUS)
+
+    # --------------------------------------------------------
+    # FIRST RUN
+    # --------------------------------------------------------
+
+    if not previous:
+
+        print(
+            "No previous data found."
+        )
+
+        print(
+            "This is probably the first run."
+        )
+
+        print(
+            "No notifications will be sent."
+        )
+
+        return
+
+
+    # --------------------------------------------------------
+    # COUNTERS
+    # --------------------------------------------------------
+
+    new_cards = 0
+    price_drops = 0
+    back_in_stock = 0
+    out_of_stock = 0
+
+
+    # --------------------------------------------------------
+    # CHECK CURRENT PRODUCTS
+    # --------------------------------------------------------
+
+    for key, new_product in current.items():
+
+        old_product = previous.get(key)
+
+
+        # ====================================================
+        # NEW CARD
+        # ====================================================
+
+        if old_product is None:
+
+            if NOTIFY_NEW_CARDS:
+
+                name = new_product.get(
+                    "card",
+                    "Unknown",
                 )
-        else:
-            print()
+
+                image = new_product.get(
+                    "image",
+                    "",
+                )
+
+                new_price = price(
+                    new_product.get("price")
+                )
+
+                new_stock = stock(
+                    new_product.get("stock")
+                )
+
+
+                print(
+                    f"NEW CARD: {name}"
+                )
+
+
+                try:
+
+                    send_discord(
+                        new_card_embed(
+                            name,
+                            new_price or 0,
+                            new_stock,
+                            image,
+                        )
+                    )
+
+                    new_cards += 1
+
+                except Exception as e:
+
+                    print(
+                        "Discord notification failed:"
+                    )
+
+                    print(e)
+
+
+            # ------------------------------------------------
+            # IMPORTANT:
+            #
+            # Do NOT continue checking price/stock transitions
+            # for a brand-new product.
+            #
+            # It isn't possible to compare its current state
+            # against a previous state.
+            # ------------------------------------------------
+
+            continue
+
+
+        # ====================================================
+        # EXISTING CARD
+        # ====================================================
+
+        name = new_product.get(
+            "card",
+            "Unknown",
+        )
+
+        image = new_product.get(
+            "image",
+            "",
+        )
+
+
+        old_price = price(
+            old_product.get("price")
+        )
+
+        new_price = price(
+            new_product.get("price")
+        )
+
+
+        old_stock = stock(
+            old_product.get("stock")
+        )
+
+        new_stock = stock(
+            new_product.get("stock")
+        )
+
+
+        # ====================================================
+        # PRICE DROP
+        # ====================================================
+
+        if (
+            NOTIFY_PRICE_DROPS
+            and old_price is not None
+            and new_price is not None
+            and new_price < old_price
+        ):
+
             print(
-                "WARNING: No Yu-Gi-Oh products were found. "
-                "The CSV was still created."
+                f"PRICE DROP: {name} | "
+                f"{old_price} -> {new_price}"
             )
 
-    except Exception as e:
-        print()
-        print("ERROR:")
-        print(type(e).__name__, e)
 
+            try:
+
+                send_discord(
+                    price_drop_embed(
+                        name,
+                        old_price,
+                        new_price,
+                        new_stock,
+                        image,
+                    )
+                )
+
+                price_drops += 1
+
+            except Exception as e:
+
+                print(
+                    "Discord notification failed:"
+                )
+
+                print(e)
+
+
+        # ====================================================
+        # BACK IN STOCK
+        # ====================================================
+
+        if (
+            NOTIFY_BACK_IN_STOCK
+            and old_stock <= 0
+            and new_stock > 0
+        ):
+
+            print(
+                f"BACK IN STOCK: {name}"
+            )
+
+
+            try:
+
+                send_discord(
+                    back_in_stock_embed(
+                        name,
+                        new_price or 0,
+                        new_stock,
+                        image,
+                    )
+                )
+
+                back_in_stock += 1
+
+            except Exception as e:
+
+                print(
+                    "Discord notification failed:"
+                )
+
+                print(e)
+
+
+        # ====================================================
+        # OUT OF STOCK
+        # ====================================================
+
+        if (
+            NOTIFY_OUT_OF_STOCK
+            and old_stock > 0
+            and new_stock <= 0
+        ):
+
+            print(
+                f"OUT OF STOCK: {name}"
+            )
+
+
+            try:
+
+                send_discord(
+                    out_of_stock_embed(
+                        name,
+                        new_price or 0,
+                        image,
+                    )
+                )
+
+                out_of_stock += 1
+
+            except Exception as e:
+
+                print(
+                    "Discord notification failed:"
+                )
+
+                print(e)
+
+
+    # --------------------------------------------------------
+    # SUMMARY
+    # --------------------------------------------------------
+
+    print()
+    print("Notification summary:")
+
+    print(
+        f"New cards: {new_cards}"
+    )
+
+    print(
+        f"Price drops: {price_drops}"
+    )
+
+    print(
+        f"Back in stock: {back_in_stock}"
+    )
+
+    print(
+        f"Out of stock: {out_of_stock}"
+    )
+
+
+# ============================================================
+# MAIN
+# ============================================================
 
 if __name__ == "__main__":
-    main()
+    compare()
