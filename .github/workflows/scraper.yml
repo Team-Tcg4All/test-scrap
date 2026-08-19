@@ -6,7 +6,7 @@ on:
   # Run automatically every 30 minutes.
   schedule:
 
-    - cron: "0 * * * *"
+    - cron: "*/5 * * * *"
 
 
   # Allows you to manually start it.
