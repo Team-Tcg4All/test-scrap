@@ -5,11 +5,11 @@ on:
     # Runs at :17 and :47 every hour (UTC)
     - cron: "17,47 * * * *"
 
-  # Allows manual runs from GitHub Actions
   workflow_dispatch:
 
 permissions:
   contents: write
+
 
 jobs:
   scrape:
@@ -61,20 +61,14 @@ jobs:
 
 
       # ======================================================
-      # SCRAPE HARU TCG
+      # RUN SCRAPER
       # ======================================================
 
       - name: Run scraper
         run: |
           python scraper.py
 
-      - name: Check CSV checksum
-        run: |
-          echo "CSV checksum:"
-          sha256sum yugioh_cards.csv
 
-          echo "Git HEAD checksum:"
-          git show HEAD:yugioh_cards.csv | sha256sum
       # ======================================================
       # VERIFY CSV
       # ======================================================
@@ -89,6 +83,12 @@ jobs:
 
           echo "===== FIRST 10 ROWS ====="
           head -n 10 yugioh_cards.csv
+
+          echo "===== CSV CHECKSUM ====="
+          sha256sum yugioh_cards.csv
+
+          echo "===== GIT HEAD CHECKSUM ====="
+          git show HEAD:yugioh_cards.csv | sha256sum
 
 
       # ======================================================
@@ -108,11 +108,9 @@ jobs:
 
       - name: Save updated card data
         run: |
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          echo "===== CSV FILE ====="
-          ls -lh yugioh_cards.csv
 
           echo "===== GIT STATUS BEFORE ADD ====="
           git status --short
@@ -129,7 +127,10 @@ jobs:
             echo "NO CHANGES TO CSV"
           else
             echo "CSV HAS CHANGED - COMMITTING"
+
             git commit -m "Update Yu-Gi-Oh card data"
+
             git push
+
             echo "CSV PUSHED SUCCESSFULLY"
           fi
