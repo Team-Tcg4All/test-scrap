@@ -1,5 +1,6 @@
 import csv
 import os
+import time
 from pathlib import Path
 
 import requests
@@ -15,20 +16,18 @@ DISCORD_WEBHOOK = os.getenv("DISCORD_WEBHOOK")
 # SETTINGS
 # ============================================================
 
-# Notify when a card/product is newly detected.
 NOTIFY_NEW_CARDS = True
-
-# Notify for ANY price decrease.
 NOTIFY_PRICE_DROPS = True
-
-# Notify for ANY price increase.
 NOTIFY_PRICE_INCREASES = True
-
-# Notify when something goes from zero stock to available.
 NOTIFY_BACK_IN_STOCK = True
-
-# Notify when something goes from available to zero.
 NOTIFY_OUT_OF_STOCK = True
+
+# Small delay between Discord messages.
+# Helps avoid hitting Discord's rate limit.
+DISCORD_DELAY = 1.0
+
+# Maximum number of times to retry a Discord 429.
+MAX_DISCORD_RETRIES = 5
 
 
 # ============================================================
@@ -53,22 +52,63 @@ def load_csv(path):
 
         for row in reader:
 
-            name = row.get("card", "").strip()
+            name = row.get(
+                "card",
+                "",
+            ).strip()
 
             if not name:
                 continue
 
-            image = row.get("image", "").strip()
+            variant_id = row.get(
+                "variant_id",
+                "",
+            ).strip()
 
-            key = (
-                name.lower(),
-                image,
-            )
+            image = row.get(
+                "image",
+                "",
+            ).strip()
+
+            variant = row.get(
+                "variant",
+                "",
+            ).strip()
+
+            # ------------------------------------------------
+            # New CSV format:
+            #
+            # Shopify variant ID is the most reliable key.
+            # ------------------------------------------------
+
+            if variant_id:
+
+                key = (
+                    "variant",
+                    variant_id,
+                )
+
+            # ------------------------------------------------
+            # Compatibility with older CSV files.
+            # ------------------------------------------------
+
+            else:
+
+                key = (
+                    "legacy",
+                    name.lower(),
+                    image,
+                    variant.lower(),
+                )
 
             products[key] = row
 
     return products
 
+
+# ============================================================
+# PARSING
+# ============================================================
 
 def price(value):
 
@@ -101,17 +141,125 @@ def send_discord(embed):
             "Skipping Discord notification."
         )
 
-        return
+        return False
 
-    response = requests.post(
-        DISCORD_WEBHOOK,
-        json={
-            "embeds": [embed]
-        },
-        timeout=30,
+    for attempt in range(
+        1,
+        MAX_DISCORD_RETRIES + 1,
+    ):
+
+        try:
+
+            response = requests.post(
+                DISCORD_WEBHOOK,
+                json={
+                    "embeds": [embed]
+                },
+                timeout=30,
+            )
+
+            # ------------------------------------------------
+            # Success
+            # ------------------------------------------------
+
+            if response.status_code in (
+                200,
+                204,
+            ):
+
+                # Give Discord a little breathing room.
+                time.sleep(DISCORD_DELAY)
+
+                return True
+
+            # ------------------------------------------------
+            # Rate limited
+            # ------------------------------------------------
+
+            if response.status_code == 429:
+
+                retry_after = None
+
+                try:
+                    data = response.json()
+                    retry_after = data.get(
+                        "retry_after"
+                    )
+                except Exception:
+                    pass
+
+                if retry_after is None:
+
+                    retry_after = response.headers.get(
+                        "Retry-After"
+                    )
+
+                try:
+                    retry_after = float(
+                        retry_after
+                    )
+                except (
+                    TypeError,
+                    ValueError,
+                ):
+                    retry_after = 5.0
+
+                # Add a small safety buffer.
+                wait_time = retry_after + 1.0
+
+                print(
+                    "Discord rate limit reached."
+                )
+
+                print(
+                    f"Waiting {wait_time:.1f} seconds "
+                    f"before retry "
+                    f"({attempt}/{MAX_DISCORD_RETRIES})..."
+                )
+
+                time.sleep(wait_time)
+
+                continue
+
+            # ------------------------------------------------
+            # Other Discord error
+            # ------------------------------------------------
+
+            print(
+                "Discord returned HTTP "
+                f"{response.status_code}:"
+            )
+
+            print(response.text)
+
+            return False
+
+        except requests.RequestException as e:
+
+            print(
+                "Discord request failed:"
+            )
+
+            print(e)
+
+            if attempt < MAX_DISCORD_RETRIES:
+
+                print(
+                    "Retrying in 5 seconds..."
+                )
+
+                time.sleep(5)
+
+            else:
+
+                return False
+
+    print(
+        "Discord notification failed after "
+        f"{MAX_DISCORD_RETRIES} attempts."
     )
 
-    response.raise_for_status()
+    return False
 
 
 # ============================================================
@@ -129,26 +277,21 @@ def new_card_embed(
         "title": "🆕 New Yu-Gi-Oh Card Detected",
         "description": f"**{name}**",
         "color": 0x9B59B6,
-
         "fields": [
-
             {
                 "name": "Price",
                 "value": f"${current_price:,.2f}",
                 "inline": True,
             },
-
             {
                 "name": "Stock",
                 "value": str(current_stock),
                 "inline": True,
             },
-
         ],
     }
 
     if image:
-
         embed["thumbnail"] = {
             "url": image
         }
@@ -176,21 +319,17 @@ def price_drop_embed(
         "title": "📉 Yu-Gi-Oh Price Drop",
         "description": f"**{name}**",
         "color": 0x2ECC71,
-
         "fields": [
-
             {
                 "name": "Previous price",
                 "value": f"${old_price:,.2f}",
                 "inline": True,
             },
-
             {
                 "name": "New price",
                 "value": f"${new_price:,.2f}",
                 "inline": True,
             },
-
             {
                 "name": "Drop",
                 "value": (
@@ -199,18 +338,15 @@ def price_drop_embed(
                 ),
                 "inline": False,
             },
-
             {
                 "name": "Stock",
                 "value": str(current_stock),
                 "inline": True,
             },
-
         ],
     }
 
     if image:
-
         embed["thumbnail"] = {
             "url": image
         }
@@ -238,21 +374,17 @@ def price_increase_embed(
         "title": "📈 Yu-Gi-Oh Price Increase",
         "description": f"**{name}**",
         "color": 0xE67E22,
-
         "fields": [
-
             {
                 "name": "Previous price",
                 "value": f"${old_price:,.2f}",
                 "inline": True,
             },
-
             {
                 "name": "New price",
                 "value": f"${new_price:,.2f}",
                 "inline": True,
             },
-
             {
                 "name": "Increase",
                 "value": (
@@ -261,18 +393,15 @@ def price_increase_embed(
                 ),
                 "inline": False,
             },
-
             {
                 "name": "Stock",
                 "value": str(current_stock),
                 "inline": True,
             },
-
         ],
     }
 
     if image:
-
         embed["thumbnail"] = {
             "url": image
         }
@@ -291,26 +420,21 @@ def back_in_stock_embed(
         "title": "🟢 Yu-Gi-Oh Card Back In Stock",
         "description": f"**{name}**",
         "color": 0x3498DB,
-
         "fields": [
-
             {
                 "name": "Price",
                 "value": f"${current_price:,.2f}",
                 "inline": True,
             },
-
             {
                 "name": "Stock",
                 "value": str(current_stock),
                 "inline": True,
             },
-
         ],
     }
 
     if image:
-
         embed["thumbnail"] = {
             "url": image
         }
@@ -328,26 +452,21 @@ def out_of_stock_embed(
         "title": "🔴 Yu-Gi-Oh Card Out Of Stock",
         "description": f"**{name}**",
         "color": 0xE74C3C,
-
         "fields": [
-
             {
                 "name": "Price",
                 "value": f"${current_price:,.2f}",
                 "inline": True,
             },
-
             {
                 "name": "Stock",
                 "value": "0",
                 "inline": True,
             },
-
         ],
     }
 
     if image:
-
         embed["thumbnail"] = {
             "url": image
         }
@@ -361,32 +480,34 @@ def out_of_stock_embed(
 
 def compare():
 
-    print("Loading current CSV...")
     current = load_csv(CURRENT)
-
-    print("Loading previous CSV...")
     previous = load_csv(PREVIOUS)
 
-    print(f"Current products: {len(current)}")
-    print(f"Previous products: {len(previous)}")
+    print(
+        f"Current products: {len(current)}"
+    )
 
-    # --------------------------------------------------------
-    # FIRST RUN
-    # --------------------------------------------------------
+    print(
+        f"Previous products: {len(previous)}"
+    )
 
     if not previous:
 
         print()
-        print("No previous data found.")
-        print("This is probably the first run.")
-        print("No notifications will be sent.")
+        print(
+            "No previous data found."
+        )
+
+        print(
+            "This is probably the first run."
+        )
+
+        print(
+            "No notifications will be sent."
+        )
 
         return
 
-
-    # --------------------------------------------------------
-    # COUNTERS
-    # --------------------------------------------------------
 
     new_cards = 0
     price_drops = 0
@@ -395,13 +516,31 @@ def compare():
     out_of_stock = 0
 
 
-    # --------------------------------------------------------
+    # ========================================================
     # CHECK CURRENT PRODUCTS
-    # --------------------------------------------------------
+    # ========================================================
 
     for key, new_product in current.items():
 
         old_product = previous.get(key)
+
+        name = new_product.get(
+            "card",
+            "Unknown",
+        ).strip()
+
+        image = new_product.get(
+            "image",
+            "",
+        ).strip()
+
+        new_price = price(
+            new_product.get("price")
+        )
+
+        new_stock = stock(
+            new_product.get("stock")
+        )
 
 
         # ====================================================
@@ -412,40 +551,21 @@ def compare():
 
             if NOTIFY_NEW_CARDS:
 
-                name = new_product.get(
-                    "card",
-                    "Unknown",
-                )
-
-                image = new_product.get(
-                    "image",
-                    "",
-                )
-
-                new_price = price(
-                    new_product.get("price")
-                )
-
-                new_stock = stock(
-                    new_product.get("stock")
-                )
-
                 print(
                     f"NEW CARD: {name}"
                 )
 
                 try:
 
-                    send_discord(
-                        new_card_embed(
-                            name,
-                            new_price or 0,
-                            new_stock,
-                            image,
-                        )
+                    embed = new_card_embed(
+                        name,
+                        new_price or 0,
+                        new_stock,
+                        image,
                     )
 
-                    new_cards += 1
+                    if send_discord(embed):
+                        new_cards += 1
 
                 except Exception as e:
 
@@ -455,12 +575,6 @@ def compare():
 
                     print(e)
 
-
-            # ------------------------------------------------
-            # A brand-new product has no previous state,
-            # so don't check price or stock transitions.
-            # ------------------------------------------------
-
             continue
 
 
@@ -468,32 +582,12 @@ def compare():
         # EXISTING CARD
         # ====================================================
 
-        name = new_product.get(
-            "card",
-            "Unknown",
-        )
-
-        image = new_product.get(
-            "image",
-            "",
-        )
-
-
         old_price = price(
             old_product.get("price")
         )
 
-        new_price = price(
-            new_product.get("price")
-        )
-
-
         old_stock = stock(
             old_product.get("stock")
-        )
-
-        new_stock = stock(
-            new_product.get("stock")
         )
 
 
@@ -515,17 +609,16 @@ def compare():
 
             try:
 
-                send_discord(
-                    price_drop_embed(
-                        name,
-                        old_price,
-                        new_price,
-                        new_stock,
-                        image,
-                    )
+                embed = price_drop_embed(
+                    name,
+                    old_price,
+                    new_price,
+                    new_stock,
+                    image,
                 )
 
-                price_drops += 1
+                if send_discord(embed):
+                    price_drops += 1
 
             except Exception as e:
 
@@ -554,17 +647,16 @@ def compare():
 
             try:
 
-                send_discord(
-                    price_increase_embed(
-                        name,
-                        old_price,
-                        new_price,
-                        new_stock,
-                        image,
-                    )
+                embed = price_increase_embed(
+                    name,
+                    old_price,
+                    new_price,
+                    new_stock,
+                    image,
                 )
 
-                price_increases += 1
+                if send_discord(embed):
+                    price_increases += 1
 
             except Exception as e:
 
@@ -591,16 +683,15 @@ def compare():
 
             try:
 
-                send_discord(
-                    back_in_stock_embed(
-                        name,
-                        new_price or 0,
-                        new_stock,
-                        image,
-                    )
+                embed = back_in_stock_embed(
+                    name,
+                    new_price or 0,
+                    new_stock,
+                    image,
                 )
 
-                back_in_stock += 1
+                if send_discord(embed):
+                    back_in_stock += 1
 
             except Exception as e:
 
@@ -627,15 +718,14 @@ def compare():
 
             try:
 
-                send_discord(
-                    out_of_stock_embed(
-                        name,
-                        new_price or 0,
-                        image,
-                    )
+                embed = out_of_stock_embed(
+                    name,
+                    new_price or 0,
+                    image,
                 )
 
-                out_of_stock += 1
+                if send_discord(embed):
+                    out_of_stock += 1
 
             except Exception as e:
 
@@ -646,20 +736,34 @@ def compare():
                 print(e)
 
 
-    # --------------------------------------------------------
+    # ========================================================
     # SUMMARY
-    # --------------------------------------------------------
+    # ========================================================
 
     print()
     print("=" * 60)
     print("NOTIFICATION SUMMARY")
     print("=" * 60)
 
-    print(f"New cards: {new_cards}")
-    print(f"Price drops: {price_drops}")
-    print(f"Price increases: {price_increases}")
-    print(f"Back in stock: {back_in_stock}")
-    print(f"Out of stock: {out_of_stock}")
+    print(
+        f"New cards:       {new_cards}"
+    )
+
+    print(
+        f"Price drops:     {price_drops}"
+    )
+
+    print(
+        f"Price increases: {price_increases}"
+    )
+
+    print(
+        f"Back in stock:   {back_in_stock}"
+    )
+
+    print(
+        f"Out of stock:    {out_of_stock}"
+    )
 
     print("=" * 60)
 
