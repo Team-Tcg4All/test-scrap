@@ -8,11 +8,6 @@ on:
   # Allows you to run it manually from GitHub Actions
   workflow_dispatch:
 
-  # Also runs automatically whenever you push to main
-  push:
-    branches:
-      - main
-
 permissions:
   contents: write
 
