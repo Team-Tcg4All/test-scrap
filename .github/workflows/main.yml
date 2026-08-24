@@ -2,10 +2,10 @@ name: Haru TCG Scraper
 
 on:
   schedule:
-    # Runs at :07 and :37 every hour (UTC)
+    # Runs at :17 and :47 every hour (UTC)
     - cron: "17,47 * * * *"
 
-  # Allows you to run it manually from GitHub Actions
+  # Allows manual runs from GitHub Actions
   workflow_dispatch:
 
 permissions:
@@ -24,7 +24,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          fetch-depth: 1
 
 
       # ======================================================
@@ -70,6 +70,22 @@ jobs:
 
 
       # ======================================================
+      # VERIFY CSV
+      # ======================================================
+
+      - name: Verify generated CSV
+        run: |
+          echo "===== CSV INFO ====="
+          ls -lh yugioh_cards.csv
+
+          echo "===== CSV ROW COUNT ====="
+          wc -l yugioh_cards.csv
+
+          echo "===== FIRST 10 ROWS ====="
+          head -n 10 yugioh_cards.csv
+
+
+      # ======================================================
       # CHECK PRICE / STOCK / NEW CARDS
       # ======================================================
 
@@ -89,9 +105,25 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
+          echo "===== CSV FILE ====="
+          ls -lh yugioh_cards.csv
+
+          echo "===== GIT STATUS BEFORE ADD ====="
+          git status --short
+
           git add yugioh_cards.csv
 
-          git diff --cached --quiet || \
-            git commit -m "Update Yu-Gi-Oh card data"
+          echo "===== GIT STATUS AFTER ADD ====="
+          git status --short
 
-          git push
+          echo "===== CSV DIFF ====="
+          git diff --cached --stat
+
+          if git diff --cached --quiet; then
+            echo "NO CHANGES TO CSV"
+          else
+            echo "CSV HAS CHANGED - COMMITTING"
+            git commit -m "Update Yu-Gi-Oh card data"
+            git push
+            echo "CSV PUSHED SUCCESSFULLY"
+          fi
