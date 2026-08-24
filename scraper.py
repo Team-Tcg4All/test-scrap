@@ -76,6 +76,14 @@ def is_yugioh(product):
 
 
 def is_excluded_product(product):
+    """
+    Exclude actual Folios and Core/Mazo products.
+
+    We only check how the TITLE STARTS.
+    This prevents legitimate cards containing words such as
+    'Core', 'Folios', etc. from being incorrectly excluded.
+    """
+
     title = product.get("title", "").strip().lower()
 
     excluded_prefixes = (
@@ -97,7 +105,19 @@ def get_image(product):
     if not images:
         return ""
 
-    return urljoin(STORE, images[0].get("src", ""))
+    return urljoin(
+        STORE,
+        images[0].get("src", "")
+    )
+
+
+def get_variant_stock(variant):
+    stock = variant.get("inventory_quantity")
+
+    if stock is None:
+        stock = 1 if variant.get("available") else 0
+
+    return stock
 
 
 def scrape(products):
@@ -119,13 +139,19 @@ def scrape(products):
 
         for variant in product.get("variants", []):
 
-            stock = variant.get("inventory_quantity")
+            variant_id = variant.get("id", "")
 
-            if stock is None:
-                stock = 1 if variant.get("available") else 0
+            variant_title = variant.get(
+                "title",
+                ""
+            ).strip()
+
+            stock = get_variant_stock(variant)
 
             rows.append({
+                "variant_id": variant_id,
                 "card": card,
+                "variant": variant_title,
                 "price": variant.get("price", ""),
                 "stock": stock,
                 "image": image,
@@ -145,7 +171,9 @@ def save_csv(rows):
         writer = csv.DictWriter(
             f,
             fieldnames=[
+                "variant_id",
                 "card",
+                "variant",
                 "price",
                 "stock",
                 "image",
@@ -166,28 +194,45 @@ def main():
         products = get_products()
 
         print()
-        print(f"Total products downloaded: {len(products)}")
+        print(
+            f"Total products downloaded: {len(products)}"
+        )
 
         rows = scrape(products)
 
-        print(f"Yu-Gi-Oh products found: {len(rows)}")
+        print(
+            f"Yu-Gi-Oh products found: {len(rows)}"
+        )
 
         save_csv(rows)
 
         print()
-        print(f"CSV created: {OUTPUT.resolve()}")
-        print(f"Rows written: {len(rows)}")
+        print(
+            f"CSV created: {OUTPUT.resolve()}"
+        )
+
+        print(
+            f"Rows written: {len(rows)}"
+        )
 
         if rows:
             print()
             print("First 5 results:")
 
             for row in rows[:5]:
+
+                variant_text = row["variant"]
+
+                if variant_text == "Default Title":
+                    variant_text = ""
+
                 print(
-                    f"{row['card']} | "
+                    f"{row['card']} "
+                    f"{variant_text} | "
                     f"${row['price']} | "
                     f"Stock: {row['stock']}"
                 )
+
         else:
             print()
             print(
@@ -196,6 +241,7 @@ def main():
             )
 
     except Exception as e:
+
         print()
         print("ERROR:")
         print(type(e).__name__, e)
