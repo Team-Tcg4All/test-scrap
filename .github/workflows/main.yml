@@ -3,7 +3,7 @@ name: Haru TCG Scraper
 on:
   schedule:
     # Runs at :17 and :47 every hour (UTC)
-    - cron: "17,47 * * * *"
+    - cron: "1,17,33,47,58 * * * *"
 
   workflow_dispatch:
 
