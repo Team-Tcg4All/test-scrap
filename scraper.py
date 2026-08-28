@@ -2,7 +2,7 @@ import csv
 import time
 from pathlib import Path
 from urllib.parse import urljoin
-
+ 
 import requests
 
 
